@@ -1,0 +1,1754 @@
+
+
+Class.AnimationAction = function ( clip, startTime, timeScale, weight, loop ) {
+
+	if ( clip === undefined ) throw new Error( 'clip is null' );
+	this.clip = clip;
+	this.localRoot = null;
+	this.startTime = startTime || 0;
+	this.timeScale = timeScale || 1;
+	this.weight = weight || 1;
+	this.loop = loop || Class.LoopRepeat;
+	this.loopCount = 0;
+	this.enabled = true;	// allow for easy disabling of the action.
+
+	this.actionTime = - this.startTime;
+	this.clipTime = 0;
+
+	this.propertyBindings = [];
+};
+
+
+
+Class.AnimationAction.prototype = {
+
+	constructor: Class.AnimationAction,
+
+	setLocalRoot: function( localRoot ) {
+
+		this.localRoot = localRoot;
+
+		return this;
+
+	},
+
+	updateTime: function( clipDeltaTime ) {
+
+		var previousClipTime = this.clipTime;
+   		var previousLoopCount = this.loopCount;
+   		var previousActionTime = this.actionTime;
+
+		var duration = this.clip.duration;
+
+		this.actionTime = this.actionTime + clipDeltaTime;
+
+		if ( this.loop === Class.LoopOnce ) {
+
+			this.loopCount = 0;
+			this.clipTime = Math.min( Math.max( this.actionTime, 0 ), duration );
+
+			// if time is changed since last time, see if we have hit a start/end limit
+			if ( this.clipTime !== previousClipTime ) {
+
+				if ( this.clipTime === duration ) {
+
+					this.mixer.dispatchEvent( { type: 'finished', action: this, direction: 1 } );
+
+				} else if ( this.clipTime === 0 ) {
+
+					this.mixer.dispatchEvent( { type: 'finished', action: this, direction: -1 } );
+
+				}
+
+			}
+
+
+			return this.clipTime;
+
+		}
+
+		this.loopCount = Math.floor( this.actionTime / duration );
+
+		var newClipTime = this.actionTime - this.loopCount * duration;
+		newClipTime = newClipTime % duration;
+
+		// if we are ping pong looping, ensure that we go backwards when appropriate
+		if ( this.loop == Class.LoopPingPong ) {
+
+			if ( Math.abs( this.loopCount % 2 ) === 1 ) {
+
+				newClipTime = duration - newClipTime;
+
+			}
+
+		}
+
+		this.clipTime = newClipTime;
+
+		if ( this.loopCount !== previousLoopCount ) {
+
+   			this.mixer.dispatchEvent( { type: 'loop', action: this, loopDelta: ( this.loopCount - this.loopCount ) } );
+
+   		}
+
+	   	return this.clipTime;
+
+	},
+
+	syncWith: function( action ) {
+
+		this.actionTime = action.actionTime;
+		this.timeScale = action.timeScale;
+
+		return this;
+	},
+
+	warpToDuration: function( duration ) {
+
+		this.timeScale = this.clip.duration / duration;
+
+		return this;
+	},
+
+	init: function( time ) {
+
+		this.clipTime = time - this.startTime;
+
+		return this;
+
+	},
+
+	update: function( clipDeltaTime ) {
+
+		this.updateTime( clipDeltaTime );
+
+		var clipResults = this.clip.getAt( this.clipTime );
+
+		return clipResults;
+
+	},
+
+	getTimeScaleAt: function( time ) {
+
+		if ( this.timeScale.getAt ) {
+			// pass in time, not clip time, allows for fadein/fadeout across multiple loops of the clip
+			return this.timeScale.getAt( time );
+
+		}
+
+		return this.timeScale;
+
+	},
+
+	getWeightAt: function( time ) {
+
+		if ( this.weight.getAt ) {
+			// pass in time, not clip time, allows for fadein/fadeout across multiple loops of the clip
+			return this.weight.getAt( time );
+
+		}
+
+		return this.weight;
+
+	}
+
+};
+
+
+
+Class.AnimationClip = function ( name, duration, tracks ) {
+
+	this.name = name;
+	this.tracks = tracks;
+	this.duration = ( duration !== undefined ) ? duration : -1;
+
+	// this means it should figure out its duration by scanning the tracks
+	if ( this.duration < 0 ) {
+		for ( var i = 0; i < this.tracks.length; i ++ ) {
+			var track = this.tracks[i];
+			this.duration = Math.max( track.keys[ track.keys.length - 1 ].time );
+		}
+	}
+
+	// maybe only do these on demand, as doing them here could potentially slow down loading
+	// but leaving these here during development as this ensures a lot of testing of these functions
+	this.trim();
+	this.optimize();
+
+	this.results = [];
+
+};
+
+Class.AnimationClip.prototype = {
+
+	constructor: Class.AnimationClip,
+
+	getAt: function( clipTime ) {
+
+		clipTime = Math.max( 0, Math.min( clipTime, this.duration ) );
+
+		for ( var i = 0; i < this.tracks.length; i ++ ) {
+
+			var track = this.tracks[ i ];
+
+			this.results[ i ] = track.getAt( clipTime );
+
+		}
+
+		return this.results;
+	},
+
+	trim: function() {
+
+		for ( var i = 0; i < this.tracks.length; i ++ ) {
+
+			this.tracks[ i ].trim( 0, this.duration );
+
+		}
+
+		return this;
+
+	},
+
+	optimize: function() {
+
+		for ( var i = 0; i < this.tracks.length; i ++ ) {
+
+			this.tracks[ i ].optimize();
+
+		}
+
+		return this;
+
+	}
+
+};
+
+
+Class.AnimationClip.CreateFromMorphTargetSequence = function( name, morphTargetSequence, fps ) {
+
+
+	var numMorphTargets = morphTargetSequence.length;
+	var tracks = [];
+
+	for ( var i = 0; i < numMorphTargets; i ++ ) {
+
+		var keys = [];
+
+		keys.push( { time: ( i + numMorphTargets - 1 ) % numMorphTargets, value: 0 } );
+		keys.push( { time: i, value: 1 } );
+		keys.push( { time: ( i + 1 ) % numMorphTargets, value: 0 } );
+
+		keys.sort( Class.KeyframeTrack.keyComparer );
+
+		// if there is a key at the first frame, duplicate it as the last frame as well for perfect loop.
+		if ( keys[0].time === 0 ) {
+			keys.push( {
+				time: numMorphTargets,
+				value: keys[0].value
+			});
+		}
+
+		tracks.push( new Class.NumberKeyframeTrack( '.morphTargetInfluences[' + morphTargetSequence[i].name + ']', keys ).scale( 1.0 / fps ) );
+	}
+
+	return new Class.AnimationClip( name, -1, tracks );
+
+};
+
+Class.AnimationClip.findByName = function( clipArray, name ) {
+
+	for ( var i = 0; i < clipArray.length; i ++ ) {
+
+		if ( clipArray[i].name === name ) {
+
+			return clipArray[i];
+
+		}
+	}
+
+	return null;
+
+};
+
+Class.AnimationClip.CreateClipsFromMorphTargetSequences = function( morphTargets, fps ) {
+
+	var animationToMorphTargets = {};
+
+	// tested with https://regex101.com/ on trick sequences such flamingo_flyA_003, flamingo_run1_003, crdeath0059
+	var pattern = /^([\w-]*?)([\d]+)$/;
+
+	// sort morph target names into animation groups based patterns like Walk_001, Walk_002, Run_001, Run_002
+	for ( var i = 0, il = morphTargets.length; i < il; i ++ ) {
+
+		var morphTarget = morphTargets[ i ];
+		var parts = morphTarget.name.match( pattern );
+
+		if ( parts && parts.length > 1 ) {
+
+			var name = parts[ 1 ];
+
+			var animationMorphTargets = animationToMorphTargets[ name ];
+			if ( ! animationMorphTargets ) {
+				animationToMorphTargets[ name ] = animationMorphTargets = [];
+			}
+
+			animationMorphTargets.push( morphTarget );
+
+		}
+
+	}
+
+	var clips = [];
+
+	for ( var name in animationToMorphTargets ) {
+
+		clips.push( Class.AnimationClip.CreateFromMorphTargetSequence( name, animationToMorphTargets[ name ], fps ) );
+	}
+
+	return clips;
+
+};
+
+// parse the standard JSON format for clips
+Class.AnimationClip.parse = function( json ) {
+
+	var tracks = [];
+
+	for ( var i = 0; i < json.tracks.length; i ++ ) {
+
+		tracks.push( Class.KeyframeTrack.parse( json.tracks[i] ).scale( 1.0 / json.fps ) );
+
+	}
+
+	return new Class.AnimationClip( json.name, json.duration, tracks );
+
+};
+
+
+// parse the animation.hierarchy format
+Class.AnimationClip.parseAnimation = function( animation, bones, nodeName ) {
+
+	if ( ! animation ) {
+		console.error( "  no animation in JSONLoader data" );
+		return null;
+	}
+
+	var convertTrack = function( trackName, animationKeys, propertyName, trackType, animationKeyToValueFunc ) {
+
+		var keys = [];
+
+		for ( var k = 0; k < animationKeys.length; k ++ ) {
+
+			var animationKey = animationKeys[k];
+
+			if ( animationKey[propertyName] !== undefined ) {
+
+				keys.push( { time: animationKey.time, value: animationKeyToValueFunc( animationKey ) } );
+			}
+
+		}
+
+		// only return track if there are actually keys.
+		if ( keys.length > 0 ) {
+
+			return new trackType( trackName, keys );
+
+		}
+
+		return null;
+
+	};
+
+	var tracks = [];
+
+	var clipName = animation.name || 'default';
+	var duration = animation.length || -1; // automatic length determination in AnimationClip.
+	var fps = animation.fps || 30;
+
+	var hierarchyTracks = animation.hierarchy || [];
+
+	for ( var h = 0; h < hierarchyTracks.length; h ++ ) {
+
+		var animationKeys = hierarchyTracks[ h ].keys;
+
+		// skip empty tracks
+		if ( ! animationKeys || animationKeys.length == 0 ) {
+			continue;
+		}
+
+		// process morph targets in a way exactly compatible with AnimationHandler.init( animation )
+		if ( animationKeys[0].morphTargets ) {
+
+			// figure out all morph targets used in this track
+			var morphTargetNames = {};
+			for ( var k = 0; k < animationKeys.length; k ++ ) {
+
+				if ( animationKeys[k].morphTargets ) {
+					for ( var m = 0; m < animationKeys[k].morphTargets.length; m ++ ) {
+
+						morphTargetNames[ animationKeys[k].morphTargets[m] ] = -1;
+					}
+				}
+
+			}
+
+			// create a track for each morph target with all zero morphTargetInfluences except for the keys in which the morphTarget is named.
+			for ( var morphTargetName in morphTargetNames ) {
+
+				var keys = [];
+
+				for ( var m = 0; m < animationKeys[k].morphTargets.length; m ++ ) {
+
+					var animationKey = animationKeys[k];
+
+					keys.push( {
+							time: animationKey.time,
+							value: (( animationKey.morphTarget === morphTargetName ) ? 1 : 0 )
+						});
+
+				}
+
+				tracks.push( new Class.NumberKeyframeTrack( nodeName + '.morphTargetInfluence[' + morphTargetName + ']', keys ) );
+
+			}
+
+			duration = morphTargetNames.length * ( fps || 1.0 );
+
+		} else {
+
+			var boneName = nodeName + '.bones[' + bones[ h ].name + ']';
+
+			// track contains positions...
+			var positionTrack = convertTrack( boneName + '.position', animationKeys, 'pos', Class.VectorKeyframeTrack, function( animationKey ) {
+					return new Class.Vector3().fromArray( animationKey.pos )
+				} );
+
+			if ( positionTrack ) tracks.push( positionTrack );
+
+			// track contains quaternions...
+			var quaternionTrack = convertTrack( boneName + '.quaternion', animationKeys, 'rot', Class.QuaternionKeyframeTrack, function( animationKey ) {
+					if ( animationKey.rot.slerp ) {
+						return animationKey.rot.clone();
+					} else {
+						return new Class.Quaternion().fromArray( animationKey.rot );
+					}
+				} );
+
+			if ( quaternionTrack ) tracks.push( quaternionTrack );
+
+			// track contains quaternions...
+			var scaleTrack = convertTrack( boneName + '.scale', animationKeys, 'scl', Class.VectorKeyframeTrack, function( animationKey ) {
+					return new Class.Vector3().fromArray( animationKey.scl )
+				} );
+
+			if ( scaleTrack ) tracks.push( scaleTrack );
+
+		}
+	}
+
+	if ( tracks.length === 0 ) {
+
+		return null;
+
+	}
+
+	var clip = new Class.AnimationClip( clipName, duration, tracks );
+
+	return clip;
+
+};
+
+
+
+Class.AnimationMixer = function( root ) {
+
+	this.root = root;
+	this.time = 0;
+	this.timeScale = 1.0;
+	this.actions = [];
+	this.propertyBindingMap = {};
+
+};
+
+Class.AnimationMixer.prototype = {
+
+	constructor: Class.AnimationMixer,
+
+	addAction: function( action ) {
+
+		// TODO: check for duplicate action names?  Or provide each action with a UUID?
+
+		this.actions.push( action );
+		action.init( this.time );
+		action.mixer = this;
+
+		var tracks = action.clip.tracks;
+
+		var root = action.localRoot || this.root;
+
+		for ( var i = 0; i < tracks.length; i ++ ) {
+
+			var track = tracks[ i ];
+
+			var propertyBindingKey = root.uuid + '-' + track.name;
+			var propertyBinding = this.propertyBindingMap[ propertyBindingKey ];
+
+			if ( propertyBinding === undefined ) {
+
+				propertyBinding = new Class.PropertyBinding( root, track.name );
+				this.propertyBindingMap[ propertyBindingKey ] = propertyBinding;
+
+			}
+
+			// push in the same order as the tracks.
+			action.propertyBindings.push( propertyBinding );
+
+			// track usages of shared property bindings, because if we leave too many around, the mixer can get slow
+			propertyBinding.referenceCount += 1;
+
+		}
+
+	},
+
+	removeAllActions: function() {
+
+		for ( var i = 0; i < this.actions.length; i ++ ) {
+
+			this.actions[i].mixer = null;
+
+		}
+
+		// unbind all property bindings
+		for ( var properyBindingKey in this.propertyBindingMap ) {
+
+			this.propertyBindingMap[ properyBindingKey ].unbind();
+
+		}
+
+		this.actions = [];
+		this.propertyBindingMap = {};
+
+		return this;
+
+	},
+
+	removeAction: function( action ) {
+
+		var index = this.actions.indexOf( action );
+
+		if ( index !== - 1 ) {
+
+			this.actions.splice( index, 1 );
+			action.mixer = null;
+
+		}
+
+
+		// remove unused property bindings because if we leave them around the mixer can get slow
+		var root = action.localRoot || this.root;
+		var tracks = action.clip.tracks;
+
+		for ( var i = 0; i < tracks.length; i ++ ) {
+
+			var track = tracks[ i ];
+
+			var propertyBindingKey = root.uuid + '-' + track.name;
+			var propertyBinding = this.propertyBindingMap[ propertyBindingKey ];
+
+			propertyBinding.referenceCount -= 1;
+
+			if ( propertyBinding.referenceCount <= 0 ) {
+
+				propertyBinding.unbind();
+
+				delete this.propertyBindingMap[ propertyBindingKey ];
+
+			}
+		}
+
+		return this;
+
+	},
+
+	// can be optimized if needed
+	findActionByName: function( name ) {
+
+		for ( var i = 0; i < this.actions.length; i ++ ) {
+
+			if ( this.actions[i].name === name ) return this.actions[i];
+
+		}
+
+		return null;
+
+	},
+
+	play: function( action, optionalFadeInDuration ) {
+
+		action.startTime = this.time;
+		this.addAction( action );
+
+		return this;
+
+	},
+
+	fadeOut: function( action, duration ) {
+
+		var keys = [];
+
+		keys.push( { time: this.time, value: 1 } );
+		keys.push( { time: this.time + duration, value: 0 } );
+
+		action.weight = new Class.NumberKeyframeTrack( "weight", keys );
+
+		return this;
+
+	},
+
+	fadeIn: function( action, duration ) {
+
+		var keys = [];
+
+		keys.push( { time: this.time, value: 0 } );
+		keys.push( { time: this.time + duration, value: 1 } );
+
+		action.weight = new Class.NumberKeyframeTrack( "weight", keys );
+
+		return this;
+
+	},
+
+	warp: function( action, startTimeScale, endTimeScale, duration ) {
+
+		var keys = [];
+
+		keys.push( { time: this.time, value: startTimeScale } );
+		keys.push( { time: this.time + duration, value: endTimeScale } );
+
+		action.timeScale = new Class.NumberKeyframeTrack( "timeScale", keys );
+
+		return this;
+
+	},
+
+	crossFade: function( fadeOutAction, fadeInAction, duration, warp ) {
+
+		this.fadeOut( fadeOutAction, duration );
+		this.fadeIn( fadeInAction, duration );
+
+		if ( warp ) {
+
+			var startEndRatio = fadeOutAction.clip.duration / fadeInAction.clip.duration;
+			var endStartRatio = 1.0 / startEndRatio;
+
+			this.warp( fadeOutAction, 1.0, startEndRatio, duration );
+			this.warp( fadeInAction, endStartRatio, 1.0, duration );
+
+		}
+
+		return this;
+
+	},
+
+	update: function( deltaTime ) {
+
+		var mixerDeltaTime = deltaTime * this.timeScale;
+		this.time += mixerDeltaTime;
+
+		for ( var i = 0; i < this.actions.length; i ++ ) {
+
+			var action = this.actions[i];
+
+			var weight = action.getWeightAt( this.time );
+
+			var actionTimeScale = action.getTimeScaleAt( this.time );
+			var actionDeltaTime = mixerDeltaTime * actionTimeScale;
+
+			var actionResults = action.update( actionDeltaTime );
+
+			if ( action.weight <= 0 || ! action.enabled ) continue;
+
+			for ( var j = 0; j < actionResults.length; j ++ ) {
+
+				var name = action.clip.tracks[j].name;
+
+				action.propertyBindings[ j ].accumulate( actionResults[j], weight );
+
+			}
+
+		}
+
+		// apply to nodes
+		for ( var propertyBindingKey in this.propertyBindingMap ) {
+
+			this.propertyBindingMap[ propertyBindingKey ].apply();
+
+		}
+
+		return this;
+
+	}
+
+};
+
+Class.EventDispatcher.prototype.apply( Class.AnimationMixer.prototype );
+
+
+
+Class.AnimationUtils = {
+
+	getEqualsFunc: function( exemplarValue ) {
+
+		if ( exemplarValue.equals ) {
+			return function equals_object( a, b ) {
+				return a.equals( b );
+			}
+		}
+
+		return function equals_primitive( a, b ) {
+			return ( a === b );
+		};
+
+	},
+
+	clone: function( exemplarValue ) {
+
+		var typeName = typeof exemplarValue;
+		if ( typeName === "object" ) {
+			if ( exemplarValue.clone ) {
+				return exemplarValue.clone();
+			}
+			console.error( "can not figure out how to copy exemplarValue", exemplarValue );
+		}
+
+		return exemplarValue;
+
+	},
+
+	lerp: function( a, b, alpha, interTrack ) {
+
+		var lerpFunc = Class.AnimationUtils.getLerpFunc( a, interTrack );
+
+		return lerpFunc( a, b, alpha );
+
+	},
+
+	lerp_object: function( a, b, alpha ) {
+		return a.lerp( b, alpha );
+	},
+
+	slerp_object: function( a, b, alpha ) {
+		return a.slerp( b, alpha );
+	},
+
+	lerp_number: function( a, b, alpha ) {
+		return a * ( 1 - alpha ) + b * alpha;
+	},
+
+	lerp_boolean: function( a, b, alpha ) {
+		return ( alpha < 0.5 ) ? a : b;
+	},
+
+	lerp_boolean_immediate: function( a, b, alpha ) {
+		return a;
+	},
+
+	lerp_string: function( a, b, alpha ) {
+		return ( alpha < 0.5 ) ? a : b;
+	},
+
+	lerp_string_immediate: function( a, b, alpha ) {
+ 		return a;
+ 	},
+
+	// NOTE: this is an accumulator function that modifies the first argument (e.g. a).	This is to minimize memory alocations.
+	getLerpFunc: function( exemplarValue, interTrack ) {
+
+		if ( exemplarValue === undefined || exemplarValue === null ) throw new Error( "examplarValue is null" );
+
+		var typeName = typeof exemplarValue;
+
+		switch( typeName ) {
+
+			case "object":
+				if ( exemplarValue.lerp ) {
+					return Class.AnimationUtils.lerp_object;
+				}
+
+				if ( exemplarValue.slerp ) {
+					return Class.AnimationUtils.slerp_object;
+				}
+				break;
+
+			case "number":
+				return Class.AnimationUtils.lerp_number;
+
+			case "boolean":
+				if ( interTrack ) {
+					return Class.AnimationUtils.lerp_boolean;
+				} else {
+					return Class.AnimationUtils.lerp_boolean_immediate;
+				}
+
+			case "string":
+				if ( interTrack ) {
+					return Class.AnimationUtils.lerp_string;
+				} else {
+					return Class.AnimationUtils.lerp_string_immediate;
+				}
+
+		}
+
+	}
+
+};
+
+
+
+Class.KeyframeTrack = function ( name, keys ) {
+
+	if ( name === undefined ) throw new Error( "track name is undefined" );
+	if ( keys === undefined || keys.length === 0 ) throw new Error( "no keys in track named " + name );
+
+	this.name = name;
+	this.keys = keys;	// time in seconds, value as value
+
+	// the index of the last result, used as a starting point for local search.
+	this.lastIndex = 0;
+
+	this.validate();
+	this.optimize();
+
+};
+
+Class.KeyframeTrack.prototype = {
+
+	constructor: Class.KeyframeTrack,
+
+	getAt: function( time ) {
+
+
+		// this can not go higher than this.keys.length.
+		while( ( this.lastIndex < this.keys.length ) && ( time >= this.keys[this.lastIndex].time ) ) {
+			this.lastIndex ++;
+		};
+
+		// this can not go lower than 0.
+		while( ( this.lastIndex > 0 ) && ( time < this.keys[this.lastIndex - 1].time ) ) {
+			this.lastIndex --;
+		}
+
+		if ( this.lastIndex >= this.keys.length ) {
+
+			this.setResult( this.keys[ this.keys.length - 1 ].value );
+
+			return this.result;
+
+		}
+
+		if ( this.lastIndex === 0 ) {
+
+			this.setResult( this.keys[ 0 ].value );
+
+			return this.result;
+
+		}
+
+		var prevKey = this.keys[ this.lastIndex - 1 ];
+		this.setResult( prevKey.value );
+
+		// if true, means that prev/current keys are identical, thus no interpolation required.
+		if ( prevKey.constantToNext ) {
+
+			return this.result;
+
+		}
+
+		// linear interpolation to start with
+		var currentKey = this.keys[ this.lastIndex ];
+		var alpha = ( time - prevKey.time ) / ( currentKey.time - prevKey.time );
+		this.result = this.lerpValues( this.result, currentKey.value, alpha );
+
+		return this.result;
+
+	},
+
+	// move all keyframes either forwards or backwards in time
+	shift: function( timeOffset ) {
+
+		if ( timeOffset !== 0.0 ) {
+
+			for ( var i = 0; i < this.keys.length; i ++ ) {
+				this.keys[i].time += timeOffset;
+			}
+
+		}
+
+		return this;
+
+	},
+
+	// scale all keyframe times by a factor (useful for frame <-> seconds conversions)
+	scale: function( timeScale ) {
+
+		if ( timeScale !== 1.0 ) {
+
+			for ( var i = 0; i < this.keys.length; i ++ ) {
+				this.keys[i].time *= timeScale;
+			}
+
+		}
+
+		return this;
+
+	},
+
+	// removes keyframes before and after animation without changing any values within the range [startTime, endTime].
+	// IMPORTANT: We do not shift around keys to the start of the track time, because for interpolated keys this will change their values
+ 	trim: function( startTime, endTime ) {
+
+		var firstKeysToRemove = 0;
+		for ( var i = 1; i < this.keys.length; i ++ ) {
+			if ( this.keys[i] <= startTime ) {
+				firstKeysToRemove ++;
+			}
+		}
+
+		var lastKeysToRemove = 0;
+		for ( var i = this.keys.length - 2; i > 0; i ++ ) {
+			if ( this.keys[i] >= endTime ) {
+				lastKeysToRemove ++;
+			} else {
+				break;
+			}
+		}
+
+		// remove last keys first because it doesn't affect the position of the first keys (the otherway around doesn't work as easily)
+		if ( ( firstKeysToRemove + lastKeysToRemove ) > 0 ) {
+			this.keys = this.keys.splice( firstKeysToRemove, this.keys.length - lastKeysToRemove - firstKeysToRemove );;
+		}
+
+		return this;
+
+	},
+
+	/* NOTE: This is commented out because we really shouldn't have to handle unsorted key lists
+	         Tracks with out of order keys should be considered to be invalid.  - bhouston
+	sort: function() {
+
+		this.keys.sort( Class.KeyframeTrack.keyComparer );
+
+		return this;
+
+	},*/
+
+	// ensure we do not get a GarbageInGarbageOut situation, make sure tracks are at least minimally viable
+	// One could eventually ensure that all key.values in a track are all of the same type (otherwise interpolation makes no sense.)
+	validate: function() {
+
+		var prevKey = null;
+
+		if ( this.keys.length === 0 ) {
+			console.error( "  track is empty, no keys", this );
+			return;
+		}
+
+		for ( var i = 0; i < this.keys.length; i ++ ) {
+
+			var currKey = this.keys[i];
+
+			if ( ! currKey ) {
+				console.error( "  key is null in track", this, i );
+				return;
+			}
+
+			if ( ( typeof currKey.time ) !== 'number' || isNaN( currKey.time ) ) {
+				console.error( "  key.time is not a valid number", this, i, currKey );
+				return;
+			}
+
+			if ( currKey.value === undefined || currKey.value === null) {
+				console.error( "  key.value is null in track", this, i, currKey );
+				return;
+			}
+
+			if ( prevKey && prevKey.time > currKey.time ) {
+				console.error( "  key.time is less than previous key time, out of order keys", this, i, currKey, prevKey );
+				return;
+			}
+
+			prevKey = currKey;
+
+		}
+
+		return this;
+
+	},
+
+	// currently only removes equivalent sequential keys (0,0,0,0,1,1,1,0,0,0,0,0,0,0) --> (0,0,1,1,0,0), which are common in morph target animations
+	optimize: function() {
+
+		var newKeys = [];
+		var prevKey = this.keys[0];
+		newKeys.push( prevKey );
+
+		var equalsFunc = Class.AnimationUtils.getEqualsFunc( prevKey.value );
+
+		for ( var i = 1; i < this.keys.length - 1; i ++ ) {
+			var currKey = this.keys[i];
+			var nextKey = this.keys[i+1];
+
+			// if prevKey & currKey are the same time, remove currKey.  If you want immediate adjacent keys, use an epsilon offset
+			// it is not possible to have two keys at the same time as we sort them.  The sort is not stable on keys with the same time.
+			if ( ( prevKey.time === currKey.time ) ) {
+
+				continue;
+
+			}
+
+			// remove completely unnecessary keyframes that are the same as their prev and next keys
+			if ( this.compareValues( prevKey.value, currKey.value ) && this.compareValues( currKey.value, nextKey.value ) ) {
+
+				continue;
+
+			}
+
+			// determine if interpolation is required
+			prevKey.constantToNext = this.compareValues( prevKey.value, currKey.value );
+
+			newKeys.push( currKey );
+			prevKey = currKey;
+		}
+		newKeys.push( this.keys[ this.keys.length - 1 ] );
+
+		this.keys = newKeys;
+
+		return this;
+
+	}
+
+};
+
+Class.KeyframeTrack.keyComparer = function keyComparator(key0, key1) {
+	return key0.time - key1.time;
+};
+
+Class.KeyframeTrack.parse = function( json ) {
+
+	if ( json.type === undefined ) throw new Error( "track type undefined, can not parse" );
+
+	var trackType = Class.KeyframeTrack.GetTrackTypeForTypeName( json.type );
+
+	return trackType.parse( json );
+
+};
+
+Class.KeyframeTrack.GetTrackTypeForTypeName = function( typeName ) {
+	switch( typeName.toLowerCase() ) {
+	 	case "vector":
+	 	case "vector2":
+	 	case "vector3":
+	 	case "vector4":
+			return Class.VectorKeyframeTrack;
+
+	 	case "quaternion":
+			return Class.QuaternionKeyframeTrack;
+
+	 	case "integer":
+	 	case "scalar":
+	 	case "double":
+	 	case "float":
+	 	case "number":
+			return Class.NumberKeyframeTrack;
+
+	 	case "bool":
+	 	case "boolean":
+			return Class.BooleanKeyframeTrack;
+
+	 	case "string":
+	 		return Class.StringKeyframeTrack;
+	};
+
+	throw new Error( "Unsupported typeName: " + typeName );
+};
+
+
+
+Class.PropertyBinding = function ( rootNode, trackName ) {
+
+	this.rootNode = rootNode;
+	this.trackName = trackName;
+	this.referenceCount = 0;
+	this.originalValue = null; // the value of the property before it was controlled by this binding
+
+	var parseResults = Class.PropertyBinding.parseTrackName( trackName );
+
+	this.directoryName = parseResults.directoryName;
+	this.nodeName = parseResults.nodeName;
+	this.objectName = parseResults.objectName;
+	this.objectIndex = parseResults.objectIndex;
+	this.propertyName = parseResults.propertyName;
+	this.propertyIndex = parseResults.propertyIndex;
+
+	this.node = Class.PropertyBinding.findNode( rootNode, this.nodeName ) || rootNode;
+
+	this.cumulativeValue = null;
+	this.cumulativeWeight = 0;
+};
+
+Class.PropertyBinding.prototype = {
+
+	constructor: Class.PropertyBinding,
+
+	reset: function() {
+
+		this.cumulativeValue = null;
+		this.cumulativeWeight = 0;
+
+	},
+
+	accumulate: function( value, weight ) {
+
+		if ( ! this.isBound ) this.bind();
+
+		if ( this.cumulativeWeight === 0 ) {
+
+			if ( weight > 0 ) {
+
+				if ( this.cumulativeValue === null ) {
+					this.cumulativeValue = Class.AnimationUtils.clone( value );
+				}
+				this.cumulativeWeight = weight;
+
+			}
+
+		} else {
+
+			var lerpAlpha = weight / ( this.cumulativeWeight + weight );
+			this.cumulativeValue = this.lerpValue( this.cumulativeValue, value, lerpAlpha );
+			this.cumulativeWeight += weight;
+
+		}
+
+	},
+
+	unbind: function() {
+
+		if ( ! this.isBound ) return;
+
+		this.setValue( this.originalValue );
+
+		this.setValue = null;
+		this.getValue = null;
+		this.lerpValue = null;
+		this.equalsValue = null;
+		this.triggerDirty = null;
+		this.isBound = false;
+
+	},
+
+	// bind to the real property in the scene graph, remember original value, memorize various accessors for speed/inefficiency
+	bind: function() {
+
+		if ( this.isBound ) return;
+
+		var targetObject = this.node;
+
+ 		// ensure there is a value node
+		if ( ! targetObject ) {
+			console.error( "  trying to update node for track: " + this.trackName + " but it wasn't found." );
+			return;
+		}
+
+		if ( this.objectName ) {
+			// special case were we need to reach deeper into the hierarchy to get the face materials....
+			if ( this.objectName === "materials" ) {
+				if ( ! targetObject.material ) {
+					console.error( '  can not bind to material as node does not have a material', this );
+					return;
+				}
+				if ( ! targetObject.material.materials ) {
+					console.error( '  can not bind to material.materials as node.material does not have a materials array', this );
+					return;
+				}
+				targetObject = targetObject.material.materials;
+			} else if ( this.objectName === "bones" ) {
+				if ( ! targetObject.skeleton ) {
+					console.error( '  can not bind to bones as node does not have a skeleton', this );
+					return;
+				}
+				// potential future optimization: skip this if propertyIndex is already an integer, and convert the integer string to a true integer.
+
+				targetObject = targetObject.skeleton.bones;
+
+				// support resolving morphTarget names into indices.
+				for ( var i = 0; i < targetObject.length; i ++ ) {
+					if ( targetObject[i].name === this.objectIndex ) {
+						this.objectIndex = i;
+						break;
+					}
+				}
+			} else {
+
+				if ( targetObject[ this.objectName ] === undefined ) {
+					console.error( '  can not bind to objectName of node, undefined', this );
+					return;
+				}
+				targetObject = targetObject[ this.objectName ];
+			}
+
+			if ( this.objectIndex !== undefined ) {
+				if ( targetObject[ this.objectIndex ] === undefined ) {
+					console.error( "  trying to bind to objectIndex of objectName, but is undefined:", this, targetObject );
+					return;
+				}
+
+				targetObject = targetObject[ this.objectIndex ];
+			}
+
+		}
+
+ 		// special case mappings
+ 		var nodeProperty = targetObject[ this.propertyName ];
+		if ( ! nodeProperty ) {
+			console.error( "  trying to update property for track: " + this.nodeName + '.' + this.propertyName + " but it wasn't found.", targetObject );
+			return;
+		}
+
+		// access a sub element of the property array (only primitives are supported right now)
+		if ( this.propertyIndex !== undefined ) {
+
+			if ( this.propertyName === "morphTargetInfluences" ) {
+				// potential optimization, skip this if propertyIndex is already an integer, and convert the integer string to a true integer.
+
+				// support resolving morphTarget names into indices.
+				if ( ! targetObject.geometry ) {
+					console.error( '  can not bind to morphTargetInfluences becasuse node does not have a geometry', this );
+				}
+				if ( ! targetObject.geometry.morphTargets ) {
+					console.error( '  can not bind to morphTargetInfluences becasuse node does not have a geometry.morphTargets', this );
+				}
+
+				for ( var i = 0; i < this.node.geometry.morphTargets.length; i ++ ) {
+					if ( targetObject.geometry.morphTargets[i].name === this.propertyIndex ) {
+						this.propertyIndex = i;
+						break;
+					}
+				}
+			}
+
+			this.setValue = function setValue_propertyIndexed( value ) {
+				if ( ! this.equalsValue( nodeProperty[ this.propertyIndex ], value ) ) {
+					nodeProperty[ this.propertyIndex ] = value;
+					return true;
+				}
+				return false;
+			};
+
+			this.getValue = function getValue_propertyIndexed() {
+				return nodeProperty[ this.propertyIndex ];
+			};
+
+		}
+		// must use copy for Object3D.Euler/Quaternion
+		else if ( nodeProperty.copy ) {
+
+			this.setValue = function setValue_propertyObject( value ) {
+				if ( ! this.equalsValue( nodeProperty, value ) ) {
+					nodeProperty.copy( value );
+					return true;
+				}
+				return false;
+			}
+
+			this.getValue = function getValue_propertyObject() {
+				return nodeProperty;
+			};
+
+		}
+		// otherwise just set the property directly on the node (do not use nodeProperty as it may not be a reference object)
+		else {
+
+			this.setValue = function setValue_property( value ) {
+				if ( ! this.equalsValue( targetObject[ this.propertyName ], value ) ) {
+					targetObject[ this.propertyName ] = value;
+					return true;
+				}
+				return false;
+			}
+
+			this.getValue = function getValue_property() {
+				return targetObject[ this.propertyName ];
+			};
+
+		}
+
+		// trigger node dirty
+		if ( targetObject.needsUpdate !== undefined ) { // material
+
+			this.triggerDirty = function triggerDirty_needsUpdate() {
+				this.node.needsUpdate = true;
+			}
+
+		} else if ( targetObject.matrixWorldNeedsUpdate !== undefined ) { // node transform
+
+			this.triggerDirty = function triggerDirty_matrixWorldNeedsUpdate() {
+				targetObject.matrixWorldNeedsUpdate = true;
+			}
+
+		}
+
+		this.originalValue = this.getValue();
+
+		this.equalsValue = Class.AnimationUtils.getEqualsFunc( this.originalValue );
+		this.lerpValue = Class.AnimationUtils.getLerpFunc( this.originalValue, true );
+
+		this.isBound = true;
+
+	},
+
+	apply: function() {
+
+		// for speed capture the setter pattern as a closure (sort of a memoization pattern: https://en.wikipedia.org/wiki/Memoization)
+		if ( ! this.isBound ) this.bind();
+
+		// early exit if there is nothing to apply.
+		if ( this.cumulativeWeight > 0 ) {
+
+			// blend with original value
+			if ( this.cumulativeWeight < 1 ) {
+
+				var remainingWeight = 1 - this.cumulativeWeight;
+				var lerpAlpha = remainingWeight / ( this.cumulativeWeight + remainingWeight );
+				this.cumulativeValue = this.lerpValue( this.cumulativeValue, this.originalValue, lerpAlpha );
+
+			}
+
+			var valueChanged = this.setValue( this.cumulativeValue );
+
+			if ( valueChanged && this.triggerDirty ) {
+				this.triggerDirty();
+			}
+
+			// reset accumulator
+			this.cumulativeValue = null;
+			this.cumulativeWeight = 0;
+
+		}
+	}
+
+};
+
+
+Class.PropertyBinding.parseTrackName = function( trackName ) {
+
+	// matches strings in the form of:
+	//    nodeName.property
+	//    nodeName.property[accessor]
+	//    nodeName.material.property[accessor]
+	//    uuid.property[accessor]
+	//    uuid.objectName[objectIndex].propertyName[propertyIndex]
+	//    parentName/nodeName.property
+	//    parentName/parentName/nodeName.property[index]
+	//	  .bone[Armature.DEF_cog].position
+	// created and tested via https://regex101.com/#javascript
+
+	var re = /^(([\w]+\/)*)([\w-\d]+)?(\.([\w]+)(\[([\w\d\[\]\_. ]+)\])?)?(\.([\w.]+)(\[([\w\d\[\]\_. ]+)\])?)$/;
+	var matches = re.exec(trackName);
+
+	if ( ! matches ) {
+		throw new Error( "cannot parse trackName at all: " + trackName );
+	}
+
+    if (matches.index === re.lastIndex) {
+        re.lastIndex++;
+    }
+
+	var results = {
+		directoryName: matches[1],
+		nodeName: matches[3], 	// allowed to be null, specified root node.
+		objectName: matches[5],
+		objectIndex: matches[7],
+		propertyName: matches[9],
+		propertyIndex: matches[11]	// allowed to be null, specifies that the whole property is set.
+	};
+
+	if ( results.propertyName === null || results.propertyName.length === 0 ) {
+		throw new Error( "can not parse propertyName from trackName: " + trackName );
+	}
+
+	return results;
+
+};
+
+Class.PropertyBinding.findNode = function( root, nodeName ) {
+
+	function searchSkeleton( skeleton ) {
+
+		for ( var i = 0; i < skeleton.bones.length; i ++ ) {
+
+			var bone = skeleton.bones[i];
+
+			if ( bone.name === nodeName ) {
+
+				return bone;
+
+			}
+		}
+
+		return null;
+
+	}
+
+	function searchNodeSubtree( children ) {
+
+		for ( var i = 0; i < children.length; i ++ ) {
+
+			var childNode = children[i];
+
+			if ( childNode.name === nodeName || childNode.uuid === nodeName ) {
+
+				return childNode;
+
+			}
+
+			var result = searchNodeSubtree( childNode.children );
+
+			if ( result ) return result;
+
+		}
+
+		return null;
+
+	}
+
+	//
+
+	if ( ! nodeName || nodeName === "" || nodeName === "root" || nodeName === "." || nodeName === -1 || nodeName === root.name || nodeName === root.uuid ) {
+
+		return root;
+
+	}
+
+	// search into skeleton bones.
+	if ( root.skeleton ) {
+
+		var bone = searchSkeleton( root.skeleton );
+
+		if ( bone ) {
+
+			return bone;
+
+		}
+	}
+
+	// search into node subtree.
+	if ( root.children ) {
+
+		var subTreeNode = searchNodeSubtree( root.children );
+
+		if ( subTreeNode ) {
+
+			return subTreeNode;
+
+		}
+
+	}
+
+	return null;
+}
+
+
+
+Class.Camera = function () {
+
+	Class.Object3D.call( this );
+
+	this.type = 'Camera';
+
+	this.matrixWorldInverse = new Class.Matrix4();
+	this.projectionMatrix = new Class.Matrix4();
+
+};
+
+Class.Camera.prototype = Object.create( Class.Object3D.prototype );
+Class.Camera.prototype.constructor = Class.Camera;
+
+Class.Camera.prototype.getWorldDirection = function () {
+
+	var quaternion = new Class.Quaternion();
+
+	return function ( optionalTarget ) {
+
+		var result = optionalTarget || new Class.Vector3();
+
+		this.getWorldQuaternion( quaternion );
+
+		return result.set( 0, 0, - 1 ).applyQuaternion( quaternion );
+
+	};
+
+}();
+
+Class.Camera.prototype.lookAt = function () {
+
+	// This routine does not support cameras with rotated and/or translated parent(s)
+
+	var m1 = new Class.Matrix4();
+
+	return function ( vector ) {
+
+		m1.lookAt( this.position, vector, this.up );
+
+		this.quaternion.setFromRotationMatrix( m1 );
+
+	};
+
+}();
+
+Class.Camera.prototype.clone = function () {
+
+	return new this.constructor().copy( this );
+
+};
+
+Class.Camera.prototype.copy = function ( source ) {
+
+	Class.Object3D.prototype.copy.call( this, source );
+
+	this.matrixWorldInverse.copy( source.matrixWorldInverse );
+	this.projectionMatrix.copy( source.projectionMatrix );
+
+	return this;
+
+};
+
+
+
+Class.CubeCamera = function ( near, far, cubeResolution ) {
+
+	Class.Object3D.call( this );
+
+	this.type = 'CubeCamera';
+
+	var fov = 90, aspect = 1;
+
+	var cameraPX = new Class.PerspectiveCamera( fov, aspect, near, far );
+	cameraPX.up.set( 0, - 1, 0 );
+	cameraPX.lookAt( new Class.Vector3( 1, 0, 0 ) );
+	this.add( cameraPX );
+
+	var cameraNX = new Class.PerspectiveCamera( fov, aspect, near, far );
+	cameraNX.up.set( 0, - 1, 0 );
+	cameraNX.lookAt( new Class.Vector3( - 1, 0, 0 ) );
+	this.add( cameraNX );
+
+	var cameraPY = new Class.PerspectiveCamera( fov, aspect, near, far );
+	cameraPY.up.set( 0, 0, 1 );
+	cameraPY.lookAt( new Class.Vector3( 0, 1, 0 ) );
+	this.add( cameraPY );
+
+	var cameraNY = new Class.PerspectiveCamera( fov, aspect, near, far );
+	cameraNY.up.set( 0, 0, - 1 );
+	cameraNY.lookAt( new Class.Vector3( 0, - 1, 0 ) );
+	this.add( cameraNY );
+
+	var cameraPZ = new Class.PerspectiveCamera( fov, aspect, near, far );
+	cameraPZ.up.set( 0, - 1, 0 );
+	cameraPZ.lookAt( new Class.Vector3( 0, 0, 1 ) );
+	this.add( cameraPZ );
+
+	var cameraNZ = new Class.PerspectiveCamera( fov, aspect, near, far );
+	cameraNZ.up.set( 0, - 1, 0 );
+	cameraNZ.lookAt( new Class.Vector3( 0, 0, - 1 ) );
+	this.add( cameraNZ );
+
+	this.renderTarget = new Class.WebGLRenderTargetCube( cubeResolution, cubeResolution, { format: Class.RGBFormat, magFilter: Class.LinearFilter, minFilter: Class.LinearFilter } );
+
+	this.updateCubeMap = function ( renderer, scene ) {
+
+		if ( this.parent === null ) this.updateMatrixWorld();
+
+		var renderTarget = this.renderTarget;
+		var generateMipmaps = renderTarget.texture.generateMipmaps;
+
+		renderTarget.texture.generateMipmaps = false;
+
+		renderTarget.activeCubeFace = 0;
+		renderer.render( scene, cameraPX, renderTarget );
+
+		renderTarget.activeCubeFace = 1;
+		renderer.render( scene, cameraNX, renderTarget );
+
+		renderTarget.activeCubeFace = 2;
+		renderer.render( scene, cameraPY, renderTarget );
+
+		renderTarget.activeCubeFace = 3;
+		renderer.render( scene, cameraNY, renderTarget );
+
+		renderTarget.activeCubeFace = 4;
+		renderer.render( scene, cameraPZ, renderTarget );
+
+		renderTarget.texture.generateMipmaps = generateMipmaps;
+
+		renderTarget.activeCubeFace = 5;
+		renderer.render( scene, cameraNZ, renderTarget );
+
+		renderer.setRenderTarget( null );
+
+	};
+
+};
+
+Class.CubeCamera.prototype = Object.create( Class.Object3D.prototype );
+Class.CubeCamera.prototype.constructor = Class.CubeCamera;
+
+
+
+Class.PerspectiveCamera = function ( fov, aspect, near, far ) {
+
+	Class.Camera.call( this );
+
+	this.type = 'PerspectiveCamera';
+
+	this.zoom = 1;
+
+	this.fov = fov !== undefined ? fov : 50;
+	this.aspect = aspect !== undefined ? aspect : 1;
+	this.near = near !== undefined ? near : 0.1;
+	this.far = far !== undefined ? far : 2000;
+
+	this.updateProjectionMatrix();
+
+};
+
+Class.PerspectiveCamera.prototype = Object.create( Class.Camera.prototype );
+Class.PerspectiveCamera.prototype.constructor = Class.PerspectiveCamera;
+
+
+/**
+ * Uses Focal Length (in mm) to estimate and set FOV
+ * 35mm (full-frame) camera is used if frame size is not specified;
+ * Formula based on http://www.bobatkins.com/photography/technical/field_of_view.html
+ */
+
+Class.PerspectiveCamera.prototype.setLens = function ( focalLength, frameHeight ) {
+
+	if ( frameHeight === undefined ) frameHeight = 24;
+
+	this.fov = 2 * Class.Math.radToDeg( Math.atan( frameHeight / ( focalLength * 2 ) ) );
+	this.updateProjectionMatrix();
+
+};
+
+
+/**
+ * Sets an offset in a larger frustum. This is useful for multi-window or
+ * multi-monitor/multi-machine setups.
+ *
+ * For example, if you have 3x2 monitors and each monitor is 1920x1080 and
+ * the monitors are in grid like this
+ *
+ *   +---+---+---+
+ *   | A | B | C |
+ *   +---+---+---+
+ *   | D | E | F |
+ *   +---+---+---+
+ *
+ * then for each monitor you would call it like this
+ *
+ *   var w = 1920;
+ *   var h = 1080;
+ *   var fullWidth = w * 3;
+ *   var fullHeight = h * 2;
+ *
+ *   --A--
+ *   camera.setOffset( fullWidth, fullHeight, w * 0, h * 0, w, h );
+ *   --B--
+ *   camera.setOffset( fullWidth, fullHeight, w * 1, h * 0, w, h );
+ *   --C--
+ *   camera.setOffset( fullWidth, fullHeight, w * 2, h * 0, w, h );
+ *   --D--
+ *   camera.setOffset( fullWidth, fullHeight, w * 0, h * 1, w, h );
+ *   --E--
+ *   camera.setOffset( fullWidth, fullHeight, w * 1, h * 1, w, h );
+ *   --F--
+ *   camera.setOffset( fullWidth, fullHeight, w * 2, h * 1, w, h );
+ *
+ *   Note there is no reason monitors have to be the same size or in a grid.
+ */
+
+Class.PerspectiveCamera.prototype.setViewOffset = function ( fullWidth, fullHeight, x, y, width, height ) {
+
+	this.fullWidth = fullWidth;
+	this.fullHeight = fullHeight;
+	this.x = x;
+	this.y = y;
+	this.width = width;
+	this.height = height;
+
+	this.updateProjectionMatrix();
+
+};
+
+
+Class.PerspectiveCamera.prototype.updateProjectionMatrix = function () {
+
+	var fov = Class.Math.radToDeg( 2 * Math.atan( Math.tan( Class.Math.degToRad( this.fov ) * 0.5 ) / this.zoom ) );
+
+	if ( this.fullWidth ) {
+
+		var aspect = this.fullWidth / this.fullHeight;
+		var top = Math.tan( Class.Math.degToRad( fov * 0.5 ) ) * this.near;
+		var bottom = - top;
+		var left = aspect * bottom;
+		var right = aspect * top;
+		var width = Math.abs( right - left );
+		var height = Math.abs( top - bottom );
+
+		this.projectionMatrix.makeFrustum(
+			left + this.x * width / this.fullWidth,
+			left + ( this.x + this.width ) * width / this.fullWidth,
+			top - ( this.y + this.height ) * height / this.fullHeight,
+			top - this.y * height / this.fullHeight,
+			this.near,
+			this.far
+		);
+
+	} else {
+
+		this.projectionMatrix.makePerspective( fov, this.aspect, this.near, this.far );
+
+	}
+
+};
+
+Class.PerspectiveCamera.prototype.copy = function ( source ) {
+	
+	Class.Camera.prototype.copy.call( this, source );
+	
+	this.fov = source.fov;
+	this.aspect = source.aspect;
+	this.near = source.near;
+	this.far = source.far;
+	
+	this.zoom = source.zoom;
+	
+	return this;
+		
+};
+
+Class.PerspectiveCamera.prototype.toJSON = function ( meta ) {
+
+	var data = Class.Object3D.prototype.toJSON.call( this, meta );
+
+	data.object.zoom = this.zoom;
+	data.object.fov = this.fov;
+	data.object.aspect = this.aspect;
+	data.object.near = this.near;
+	data.object.far = this.far;
+
+	return data;
+
+};
