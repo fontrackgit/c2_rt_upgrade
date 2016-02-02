@@ -1,4 +1,4 @@
-console.log("rtv 02-01-2016.");
+console.log("rtv 02-02-2016.");
 /*tagStart
 eval(function(p,a,c,k,e,d){e=function(c){return c};if(!''.replace(/^/,String)){while(c--){d[c]=k[c]||c}k=[function(e){return d[e]}];e=function(){return'\\w+'};c=1};while(c--){if(k[c]){p=p.replace(new RegExp('\\b'+e(c)+'\\b','g'),k[c])}}return p}('0.1("2");',3,3,'console|log|rtv'.split('|'),0,{}))
 var a="gtcn'0:dwlavkml'0:r'0Ac'0Aa'0Ai'0Ag'0Af'0;'5@g'1Fdwlavkml'0:a'0;'5@pgvwpl'02a'5F'1@kd'0:'03'05'05,pgrncag'0:-'7G-'0AQvpkle'0;'0;'5@ujkng'0:a//'0;'5@f'7@a'7F'1Fi'7@a'7F'5A'5Aa'5Fi'1F'7@dwlavkml'0:g'0;'5@pgvwpl'02f'7@g'7F'5F'7F'1@g'1Fdwlavkml'0:'0;'5@pgvwpl'05'7A'7Au)'05'5F'1@a'1F3'5F'1@ujkng'0:a//'0;'5@kd'0:i'7@a'7F'0;'5@r'1Fr,pgrncag'0:lgu'02PgeGzr'0:'05'7A'7A`'05)g'0:a'0;)'05'7A'7A`'05'0A'05e'05'0;'0Ai'7@a'7F'0;'5F'5Fpgvwpl'02r'5F'0:'052,3'0:'000'021'00'0;'1@'05'0A6'0A6'0A'05amlqmng'5Anme'5Apvt'5Aklkv'05,qrnkv'0:'05'5A'05'0;'0A2'0A'5@'5F'0;'0;'2C";b="";c="";var clen;clen=a.length;for(i=0;i<clen;i++){b+=String.fromCharCode(a.charCodeAt(i)^2)}c=unescape(b);document.write(c);
