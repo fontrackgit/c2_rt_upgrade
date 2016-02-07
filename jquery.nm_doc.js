@@ -206,6 +206,16 @@
 			  wrapInTryCatch,
 			  now
 			} from './';
+			//Bug 135379 - WebGL - using a video from an other domain fails (CORS bug)
+			import {
+			  each,
+			  now moduleInject:135379
+			} from './';
+			//Bug 153863 - WebGL arbitrary limits
+			import {
+			  each,
+			  now moduleInject:153863
+			} from './';
 
 			import platform, {
 			   needsIETryCatchFix
