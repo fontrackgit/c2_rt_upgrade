@@ -58,7 +58,8 @@
 
 
 	// Feuille de style CSS pour toggle		
-	//	jQuery(toggle_iosFive).appendTo("head");			
+	//	jQuery(toggle_iosFive).appendTo("head");
+	//	jQuery(toggle_iosSix).appendTo("head");
 	
 	
 	
@@ -588,7 +589,7 @@
 				newText.style.marginRight = "3%";
 		
 		// input form	
-			//rajouter à insérer correctement
+			//rajouter Ã  insÃ©rer correctement
 			var newLabel = document.createElement("span");
 				newLabel.style.cssFloat = "right";
 				newLabel.style.width = inputWidth+"%";
@@ -674,7 +675,7 @@
 				if (id.toString() == ">USE UNIQUE ID<") { } else {  newToggleLine.id = id; };
 			// css style for toggle buttons.
 				if (this.iOS_version === true || this.iOS_version === false) { ++toggle_t; }; 
-				if (this.iOS_version === true && toggle_t == 1) { jQuery(toggle_iosFour).appendTo("head"); } else if (this.iOS_version === false && toggle_t == 1) { jQuery(toggle_iosFive).appendTo("head"); };
+				if (this.iOS_version === true && toggle_t == 1) { jQuery(toggle_iosFour).appendTo("head"); } else if (this.iOS_version === false && toggle_t == 1) { jQuery(toggle_iosFive).appendTo("head"); }; else if (this.iOS_version === false && toggle_t == 1) { jQuery(toggle_iosSix).appendTo("head"); };
 				newToggleLine.style.width = lineWidth-(leftSpace+rightSpace)+"%"; 
 				if (lineHeight == "auto") 
 					{ newToggleLine.style.height = "auto"; }
